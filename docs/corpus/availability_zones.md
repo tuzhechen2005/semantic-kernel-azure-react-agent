@@ -2,6 +2,8 @@
 id: availability_zones
 title: Azure Availability Zones
 source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+version: 2026-08-30
+updated: 2026-08-30
 ---
 
 # Azure Availability Zones

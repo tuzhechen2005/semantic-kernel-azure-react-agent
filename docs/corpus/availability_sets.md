@@ -2,6 +2,8 @@
 id: availability_sets
 title: Azure Virtual Machine Availability Sets
 source: https://learn.microsoft.com/en-us/azure/virtual-machines/availability-set-overview
+version: 2026-08-30
+updated: 2026-08-30
 ---
 
 # Azure Virtual Machine Availability Sets

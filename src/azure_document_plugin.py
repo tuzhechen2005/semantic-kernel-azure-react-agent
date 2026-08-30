@@ -79,6 +79,17 @@ class AzureDocumentPlugin:
                 }
                 for result in results
             ],
+            "telemetry": {
+                "candidates": [
+                    {
+                        "documentId": result.chunk.document_id,
+                        "sectionId": result.chunk.chunk_id,
+                        "score": result.score,
+                        "matchedTerms": list(result.matched_terms),
+                    }
+                    for result in results
+                ]
+            },
         }
 
         return json.dumps(

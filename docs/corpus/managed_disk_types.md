@@ -2,6 +2,8 @@
 id: managed_disk_types
 title: Azure Managed Disk Types
 source: https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types
+version: 2026-08-30
+updated: 2026-08-30
 ---
 
 # Azure Managed Disk Types

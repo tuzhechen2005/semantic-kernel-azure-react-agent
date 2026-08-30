@@ -1,0 +1,89 @@
+{
+  "corpusSha256": "708722aae94104f57673771492417d333deb3a4b58faa63b2fb1556b60da3e92",
+  "documentCount": 6,
+  "documents": [
+    {
+      "documentId": "availability_sets",
+      "sections": [
+        "availability_sets#1",
+        "availability_sets#2",
+        "availability_sets#3"
+      ],
+      "sha256": "205efb55ee76c6382f3f07b4e340b55a43a39c9e144e566aaf5bce93680b4ae6",
+      "source": "https://learn.microsoft.com/en-us/azure/virtual-machines/availability-set-overview",
+      "title": "Azure Virtual Machine Availability Sets",
+      "updated": "2026-08-30",
+      "version": "2026-08-30"
+    },
+    {
+      "documentId": "availability_zones",
+      "sections": [
+        "availability_zones#1",
+        "availability_zones#2",
+        "availability_zones#3",
+        "availability_zones#4"
+      ],
+      "sha256": "253accc0f7c76c8a991b0749a9454182b4f56f39d31da09fe8a66ab805b75dcf",
+      "source": "https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview",
+      "title": "Azure Availability Zones",
+      "updated": "2026-08-30",
+      "version": "2026-08-30"
+    },
+    {
+      "documentId": "disk_encryption",
+      "sections": [
+        "disk_encryption#1",
+        "disk_encryption#2",
+        "disk_encryption#3"
+      ],
+      "sha256": "dbb87c83ca3db5b7ff972d381c9ae7ce2eae67d21fd51ca9c5a57df632639688",
+      "source": "https://learn.microsoft.com/en-us/azure/virtual-machines/disk-encryption-overview",
+      "title": "Azure Virtual Machine Disk Encryption Overview",
+      "updated": "2026-08-30",
+      "version": "2026-08-30"
+    },
+    {
+      "documentId": "managed_disk_types",
+      "sections": [
+        "managed_disk_types#1",
+        "managed_disk_types#2",
+        "managed_disk_types#3",
+        "managed_disk_types#4",
+        "managed_disk_types#5",
+        "managed_disk_types#6"
+      ],
+      "sha256": "7c2dbc631d70d58772a27df4603c081f3cfe628ca598c15244d1f5f359c35582",
+      "source": "https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types",
+      "title": "Azure Managed Disk Types",
+      "updated": "2026-08-30",
+      "version": "2026-08-30"
+    },
+    {
+      "documentId": "virtual_machine_backup",
+      "sections": [
+        "virtual_machine_backup#1",
+        "virtual_machine_backup#2",
+        "virtual_machine_backup#3"
+      ],
+      "sha256": "089368761e40a62505b8b8e0c42d5fb1c9b0859513d2722d67bd7392faebfe02",
+      "source": "https://learn.microsoft.com/en-us/azure/backup/backup-azure-vms-introduction",
+      "title": "Azure Virtual Machine Backup",
+      "updated": "2026-08-30",
+      "version": "2026-08-30"
+    },
+    {
+      "documentId": "virtual_machine_sizes",
+      "sections": [
+        "virtual_machine_sizes#1",
+        "virtual_machine_sizes#2",
+        "virtual_machine_sizes#3"
+      ],
+      "sha256": "64975095163348005ef61b75dba1e48cbd36e362297b444a5597fbc37da33b12",
+      "source": "https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/overview",
+      "title": "Azure Virtual Machine Sizes Overview",
+      "updated": "2026-08-30",
+      "version": "2026-08-30"
+    }
+  ],
+  "schemaVersion": "task2-corpus-manifest-v1"
+}

@@ -1,5 +1,7 @@
+import asyncio
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -30,6 +32,7 @@ class ToolInvocationError(RuntimeError):
 PromptBuilder = Callable[[str, tuple[str, ...]], str]
 
 URL_PATTERN = re.compile(r"https?://[^\s\]\[(){}<>\"']+")
+SAFE_FALLBACK_PREFIX = "INSUFFICIENT_EVIDENCE:"
 
 
 @dataclass(frozen=True)
@@ -45,12 +48,21 @@ class ReactTraceStep:
         "protocol_error",
         "model_error",
         "tool_error",
+        "model_timeout",
+        "tool_timeout",
     ]
     thought: str | None = None
     action: str | None = None
     arguments: dict[str, object] | None = None
     observation: str | None = None
     error: str | None = None
+    model_latency_ms: float | None = None
+    tool_latency_ms: float | None = None
+    validation_result: str | None = None
+    retry_count: int = 0
+    candidate_documents: tuple[dict[str, object], ...] = ()
+    read_document_id: str | None = None
+    termination_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +73,10 @@ class ReactRunResult:
         "parse_error",
         "model_error",
         "tool_error",
+        "model_timeout",
+        "tool_timeout",
+        "evidence_insufficient",
+        "correction_limit",
     ]
     question: str
     answer: str | None
@@ -78,11 +94,18 @@ class ReactRunner:
         plugin_name: str = "azure_docs",
         max_steps: int = 5,
         max_parse_retries: int = 2,
+        max_corrections: int = 3,
+        model_timeout_seconds: float = 120.0,
+        tool_timeout_seconds: float = 10.0,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps 必须大于或等于 1")
         if max_parse_retries < 0:
             raise ValueError("max_parse_retries 必须大于或等于 0")
+        if max_corrections < 0:
+            raise ValueError("max_corrections 必须大于或等于 0")
+        if model_timeout_seconds <= 0 or tool_timeout_seconds <= 0:
+            raise ValueError("timeout 必须大于 0")
 
         self.kernel = kernel
         self.model = model
@@ -90,6 +113,9 @@ class ReactRunner:
         self.plugin_name = plugin_name
         self.max_steps = max_steps
         self.max_parse_retries = max_parse_retries
+        self.max_corrections = max_corrections
+        self.model_timeout_seconds = model_timeout_seconds
+        self.tool_timeout_seconds = tool_timeout_seconds
 
     async def run(self, question: str) -> ReactRunResult:
         normalized_question = question.strip()
@@ -103,15 +129,42 @@ class ReactRunner:
         observed_document_ids: set[str] = set()
         successful_action_count = 0
         consecutive_parse_errors = 0
+        correction_count = 0
 
         for step_number in range(1, self.max_steps + 1):
             prompt = self.prompt_builder(
                 normalized_question,
                 tuple(transcript),
             )
+            model_started = time.perf_counter()
             try:
-                raw_output = await self.model.generate(prompt)
+                raw_output = await asyncio.wait_for(
+                    self.model.generate(prompt),
+                    timeout=self.model_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                model_latency_ms = (time.perf_counter() - model_started) * 1000
+                error = "本地模型生成超时"
+                trace.append(
+                    ReactTraceStep(
+                        step_number=step_number,
+                        prompt=prompt,
+                        raw_model_output="",
+                        outcome="model_timeout",
+                        error=error,
+                        model_latency_ms=model_latency_ms,
+                        termination_reason="model_timeout",
+                    )
+                )
+                return ReactRunResult(
+                    status="model_timeout",
+                    question=normalized_question,
+                    answer=None,
+                    trace=tuple(trace),
+                    error=error,
+                )
             except Exception as exc:
+                model_latency_ms = (time.perf_counter() - model_started) * 1000
                 error = f"本地模型生成失败：{exc}"
                 trace.append(
                     ReactTraceStep(
@@ -120,6 +173,8 @@ class ReactRunner:
                         raw_model_output="",
                         outcome="model_error",
                         error=error,
+                        model_latency_ms=model_latency_ms,
+                        termination_reason="model_error",
                     )
                 )
                 return ReactRunResult(
@@ -129,11 +184,13 @@ class ReactRunner:
                     trace=tuple(trace),
                     error=error,
                 )
+            model_latency_ms = (time.perf_counter() - model_started) * 1000
 
             try:
                 parsed_step = parse_react_output(raw_output)
             except ReactParseError as exc:
                 consecutive_parse_errors += 1
+                correction_count += 1
                 error = str(exc)
                 observation = self._format_error_observation(error)
                 trace.append(
@@ -144,6 +201,18 @@ class ReactRunner:
                         outcome="parse_error",
                         observation=observation,
                         error=error,
+                        model_latency_ms=model_latency_ms,
+                        validation_result="invalid_format",
+                        retry_count=correction_count,
+                        termination_reason=(
+                            "parse_error"
+                            if consecutive_parse_errors > self.max_parse_retries
+                            else (
+                                "correction_limit"
+                                if correction_count > self.max_corrections
+                                else None
+                            )
+                        ),
                     )
                 )
                 if consecutive_parse_errors > self.max_parse_retries:
@@ -157,6 +226,14 @@ class ReactRunner:
                             f"{self.max_parse_retries}"
                         ),
                     )
+                if correction_count > self.max_corrections:
+                    return ReactRunResult(
+                        status="correction_limit",
+                        question=normalized_question,
+                        answer=None,
+                        trace=tuple(trace),
+                        error=f"达到全局纠错上限：{self.max_corrections}",
+                    )
                 transcript.extend(
                     (
                         raw_output.strip(),
@@ -168,11 +245,32 @@ class ReactRunner:
             consecutive_parse_errors = 0
 
             if isinstance(parsed_step, ReactFinalAnswer):
+                if parsed_step.answer.strip().startswith(SAFE_FALLBACK_PREFIX):
+                    trace.append(
+                        ReactTraceStep(
+                            step_number=step_number,
+                            prompt=prompt,
+                            raw_model_output=raw_output,
+                            outcome="final",
+                            thought=parsed_step.thought,
+                            model_latency_ms=model_latency_ms,
+                            validation_result="safe_fallback",
+                            retry_count=correction_count,
+                            termination_reason="insufficient_evidence",
+                        )
+                    )
+                    return ReactRunResult(
+                        status="evidence_insufficient",
+                        question=normalized_question,
+                        answer=parsed_step.answer,
+                        trace=tuple(trace),
+                    )
                 answer_error = self._validate_answer_sources(
                     parsed_step.answer,
                     evidence_urls,
                 )
                 if answer_error is not None:
+                    correction_count += 1
                     observation = json.dumps(
                         {
                             "status": "error",
@@ -190,6 +288,14 @@ class ReactRunner:
                             thought=parsed_step.thought,
                             observation=observation,
                             error=answer_error,
+                            model_latency_ms=model_latency_ms,
+                            validation_result="invalid_sources",
+                            retry_count=correction_count,
+                            termination_reason=(
+                                "correction_limit"
+                                if correction_count > self.max_corrections
+                                else None
+                            ),
                         )
                     )
                     transcript.extend(
@@ -198,6 +304,14 @@ class ReactRunner:
                             f"Observation: {observation}",
                         )
                     )
+                    if correction_count > self.max_corrections:
+                        return ReactRunResult(
+                            status="correction_limit",
+                            question=normalized_question,
+                            answer=None,
+                            trace=tuple(trace),
+                            error=f"达到全局纠错上限：{self.max_corrections}",
+                        )
                     continue
 
                 trace.append(
@@ -207,6 +321,10 @@ class ReactRunner:
                         raw_model_output=raw_output,
                         outcome="final",
                         thought=parsed_step.thought,
+                        model_latency_ms=model_latency_ms,
+                        validation_result="valid_sources",
+                        retry_count=correction_count,
+                        termination_reason="completed",
                     )
                 )
                 return ReactRunResult(
@@ -222,7 +340,13 @@ class ReactRunner:
                 observed_document_ids=observed_document_ids,
             )
             action_signature = self._action_signature(parsed_step)
+            was_duplicate = (
+                protocol_error is None
+                and action_signature in executed_actions
+            )
+            tool_latency_ms: float | None = None
             if protocol_error is not None:
+                correction_count += 1
                 observation = json.dumps(
                     {
                         "status": "error",
@@ -231,7 +355,8 @@ class ReactRunner:
                     },
                     ensure_ascii=False,
                 )
-            elif action_signature in executed_actions:
+            elif was_duplicate:
+                correction_count += 1
                 observation = json.dumps(
                     {
                         "status": "error",
@@ -243,9 +368,40 @@ class ReactRunner:
                     }
                 )
             else:
+                tool_started = time.perf_counter()
                 try:
-                    observation = await self._invoke_action(parsed_step)
+                    observation = await asyncio.wait_for(
+                        self._invoke_action(parsed_step),
+                        timeout=self.tool_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    tool_latency_ms = (time.perf_counter() - tool_started) * 1000
+                    error = "插件调用超时"
+                    trace.append(
+                        ReactTraceStep(
+                            step_number=step_number,
+                            prompt=prompt,
+                            raw_model_output=raw_output,
+                            outcome="tool_timeout",
+                            thought=parsed_step.thought,
+                            action=parsed_step.action,
+                            arguments=dict(parsed_step.arguments),
+                            error=error,
+                            model_latency_ms=model_latency_ms,
+                            tool_latency_ms=tool_latency_ms,
+                            retry_count=correction_count,
+                            termination_reason="tool_timeout",
+                        )
+                    )
+                    return ReactRunResult(
+                        status="tool_timeout",
+                        question=normalized_question,
+                        answer=None,
+                        trace=tuple(trace),
+                        error=error,
+                    )
                 except ToolInvocationError as exc:
+                    tool_latency_ms = (time.perf_counter() - tool_started) * 1000
                     error = str(exc)
                     trace.append(
                         ReactTraceStep(
@@ -257,6 +413,10 @@ class ReactRunner:
                             action=parsed_step.action,
                             arguments=dict(parsed_step.arguments),
                             error=error,
+                            model_latency_ms=model_latency_ms,
+                            tool_latency_ms=tool_latency_ms,
+                            retry_count=correction_count,
+                            termination_reason="tool_error",
                         )
                     )
                     return ReactRunResult(
@@ -266,6 +426,7 @@ class ReactRunner:
                         trace=tuple(trace),
                         error=error,
                     )
+                tool_latency_ms = (time.perf_counter() - tool_started) * 1000
                 observation_succeeded = self._observation_succeeded(
                     observation
                 )
@@ -292,8 +453,34 @@ class ReactRunner:
                     action=parsed_step.action,
                     arguments=dict(parsed_step.arguments),
                     observation=observation,
+                    model_latency_ms=model_latency_ms,
+                    tool_latency_ms=tool_latency_ms,
+                    validation_result=(
+                        "protocol_error" if protocol_error is not None
+                        else ("duplicate_action" if was_duplicate else "observation_validated")
+                    ),
+                    retry_count=correction_count,
+                    candidate_documents=self._extract_candidates(observation),
+                    read_document_id=(
+                        str(parsed_step.arguments.get("document_id"))
+                        if parsed_step.action == "read_document"
+                        else None
+                    ),
+                    termination_reason=(
+                        "correction_limit"
+                        if correction_count > self.max_corrections
+                        else None
+                    ),
                 )
             )
+            if correction_count > self.max_corrections:
+                return ReactRunResult(
+                    status="correction_limit",
+                    question=normalized_question,
+                    answer=None,
+                    trace=tuple(trace),
+                    error=f"达到全局纠错上限：{self.max_corrections}",
+                )
             transcript.extend(
                 (
                     raw_output.strip(),
@@ -385,6 +572,22 @@ class ReactRunner:
                     if isinstance(candidate, str) and candidate.strip():
                         ids.add(candidate.strip())
         return ids
+
+    @staticmethod
+    def _extract_candidates(observation: str) -> tuple[dict[str, object], ...]:
+        try:
+            payload = json.loads(observation)
+        except (json.JSONDecodeError, TypeError):
+            return ()
+        if not isinstance(payload, dict):
+            return ()
+        telemetry = payload.get("telemetry")
+        if not isinstance(telemetry, dict):
+            return ()
+        candidates = telemetry.get("candidates")
+        if not isinstance(candidates, list):
+            return ()
+        return tuple(dict(item) for item in candidates if isinstance(item, dict))
 
     @staticmethod
     def _observation_succeeded(observation: str) -> bool:
