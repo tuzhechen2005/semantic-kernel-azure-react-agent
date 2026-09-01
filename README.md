@@ -43,10 +43,13 @@ semantic-kernel-azure-react-agent/
 │   ├── cli.py
 │   ├── document_store.py
 │   ├── local_phi3_model.py
+│   ├── phase7_evidence.py       # 共享契约、trace sidecar 与 canary 边界
+│   ├── qa_pipeline.py           # 只追加原始输出与严格评分
 │   ├── react_parser.py
 │   ├── react_prompt.py
 │   ├── react_runner.py
 │   ├── react_smoke_test.py
+│   ├── semantic_cache.py        # 有版本/TTL/容量/安全域的保守缓存
 │   └── trace_writer.py
 ├── tests/
 ├── DEVELOPMENT_ROADMAP.md
@@ -146,7 +149,7 @@ python -m src.real_plugin_smoke_test
 2. 调用 `read_document` 阅读 `managed_disk_types`。
 3. 回答 `Standard HDD`，并引用 Observation 中的 Microsoft Learn 来源。
 
-47 项单元与集成测试覆盖了解析器、Prompt、Semantic Kernel 插件、格式恢复、循环终止、失败工具重试、错误证据隔离、重复动作、来源验证、CLI 异常隔离、模型配置和 trace 写入。
+83 项单元与集成测试覆盖解析器、Prompt、Semantic Kernel 插件、格式恢复、循环终止、失败工具重试、错误证据隔离、重复动作、来源验证、缓存边界、共享 trace、CLI 异常隔离和模型配置。
 
 ## 安全与可靠性设计
 
@@ -157,11 +160,11 @@ python -m src.real_plugin_smoke_test
 - 相同动作不会重复执行，防止小模型陷入循环。
 - 解析失败不会立即结束整轮问答；Runner 会回填格式错误和唯一合法模板，默认最多连续纠正两次。
 - Final Answer 必须包含 Observation 中出现过的来源 URL；允许同一文档 URL 增加锚点，但拒绝新域名或新路径。
-- 原始模型输出原样保存在 trace 中，失败不会被静默美化。
+- 正式评分的 `rawOutput` 逐字保留且只追加；运行 trace 是单独的受控日志，会脱敏秘密/本机路径并限制外部文本长度。
 
 ## 当前限制
 
-- 文档库目前只有三个 Azure VM 主题，适合验证框架闭环，不代表完整 Azure 知识库。
+- 文档库目前只有六个 Azure VM 主题，适合验证框架闭环，不代表完整 Azure 知识库。
 - 检索为确定性词法检索，尚未使用 embedding 或向量数据库。
 - Phi-3 Mini Q4 是小型量化模型，偶尔可能偏离输出协议；程序只容忍表现层差异，语义不明确时要求模型重试而不猜测意图。
 - 本项目只检索文档，不执行任何真实 Azure 资源操作。

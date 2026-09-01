@@ -11,14 +11,20 @@ from src.react_runner import ReactRunner, ScriptedModel, build_test_prompt
 class SearchPlugin:
     @kernel_function(name="search_documents")
     def search_documents(self, query: str, top_k: int = 3) -> str:
-        return json.dumps({
-            "status": "success",
-            "results": [{
-                "documentId": "managed_disk_types",
-                "source": "https://learn.microsoft.com/disk-types",
-            }],
-            "telemetry": {"candidates": [{"documentId": "managed_disk_types", "score": 8.5}]},
-        })
+        return json.dumps(
+            {
+                "status": "success",
+                "results": [
+                    {
+                        "documentId": "managed_disk_types",
+                        "source": "https://learn.microsoft.com/disk-types",
+                    }
+                ],
+                "telemetry": {
+                    "candidates": [{"documentId": "managed_disk_types", "score": 8.5}]
+                },
+            }
+        )
 
     @kernel_function(name="read_document")
     async def read_document(self, document_id: str) -> str:
@@ -33,14 +39,48 @@ def kernel_with_plugin() -> Kernel:
 
 
 class ReliabilityControlTests(unittest.IsolatedAsyncioTestCase):
-    async def test_safe_insufficient_evidence_is_degradation_not_completion(self) -> None:
-        model = ScriptedModel([
+    async def test_retry_and_global_correction_limits_cannot_exceed_shared_bound(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "0 到 2"):
+            ReactRunner(
+                kernel_with_plugin(),
+                ScriptedModel(["unused"]),
+                build_test_prompt,
+                max_parse_retries=3,
+            )
+        with self.assertRaisesRegex(ValueError, "0 到 2"):
+            ReactRunner(
+                kernel_with_plugin(),
+                ScriptedModel(["unused"]),
+                build_test_prompt,
+                max_corrections=3,
+            )
+
+    async def test_safe_insufficient_evidence_is_degradation_not_completion(
+        self,
+    ) -> None:
+        fallback = (
             "Thought: The local corpus cannot establish this.\n"
             "Final Answer: INSUFFICIENT_EVIDENCE: no observed document supports the claim."
-        ])
-        result = await ReactRunner(kernel_with_plugin(), model, build_test_prompt).run("Live price?")
+        )
+        model = ScriptedModel(
+            [
+                fallback,
+                "Thought: Search first.\nAction: search_documents\n"
+                'Action Input: {"query":"live price"}',
+                fallback,
+            ]
+        )
+        result = await ReactRunner(kernel_with_plugin(), model, build_test_prompt).run(
+            "Live price?"
+        )
 
         self.assertEqual(result.status, "evidence_insufficient")
+        self.assertEqual(
+            [step.outcome for step in result.trace],
+            ["protocol_error", "action", "final"],
+        )
         self.assertEqual(result.trace[-1].termination_reason, "insufficient_evidence")
 
     async def test_model_timeout_has_bounded_safe_terminal_state(self) -> None:
@@ -50,7 +90,10 @@ class ReliabilityControlTests(unittest.IsolatedAsyncioTestCase):
                 return "unused"
 
         runner = ReactRunner(
-            kernel_with_plugin(), SlowModel(), build_test_prompt, model_timeout_seconds=0.001
+            kernel_with_plugin(),
+            SlowModel(),
+            build_test_prompt,
+            model_timeout_seconds=0.001,
         )
         result = await runner.run("Question")
 
@@ -58,12 +101,14 @@ class ReliabilityControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.trace[0].outcome, "model_timeout")
 
     async def test_tool_timeout_does_not_continue_or_execute_answer(self) -> None:
-        model = ScriptedModel([
-            "Thought: Search.\nAction: search_documents\n"
-            'Action Input: {"query":"disk"}',
-            "Thought: Read.\nAction: read_document\n"
-            'Action Input: {"document_id":"managed_disk_types"}',
-        ])
+        model = ScriptedModel(
+            [
+                "Thought: Search.\nAction: search_documents\n"
+                'Action Input: {"query":"disk"}',
+                "Thought: Read.\nAction: read_document\n"
+                'Action Input: {"document_id":"managed_disk_types"}',
+            ]
+        )
         runner = ReactRunner(
             kernel_with_plugin(), model, build_test_prompt, tool_timeout_seconds=0.001
         )
@@ -78,8 +123,11 @@ class ReliabilityControlTests(unittest.IsolatedAsyncioTestCase):
             'Action Input: {"document_id":"invented"}'
         )
         runner = ReactRunner(
-            kernel_with_plugin(), ScriptedModel([bad_read, bad_read]), build_test_prompt,
-            max_steps=5, max_corrections=1,
+            kernel_with_plugin(),
+            ScriptedModel([bad_read, bad_read]),
+            build_test_prompt,
+            max_steps=5,
+            max_corrections=1,
         )
         result = await runner.run("Question")
 
@@ -88,13 +136,15 @@ class ReliabilityControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.trace[-1].termination_reason, "correction_limit")
 
     async def test_trace_records_latency_candidates_validation_and_retry(self) -> None:
-        model = ScriptedModel([
-            "bad",
-            "Thought: Search.\nAction: search_documents\n"
-            'Action Input: {"query":"disk"}',
-            "Thought: Done.\nFinal Answer: Standard HDD.\n"
-            "Source: https://learn.microsoft.com/disk-types",
-        ])
+        model = ScriptedModel(
+            [
+                "bad",
+                "Thought: Search.\nAction: search_documents\n"
+                'Action Input: {"query":"disk"}',
+                "Thought: Done.\nFinal Answer: Standard HDD.\n"
+                "Source: https://learn.microsoft.com/disk-types",
+            ]
+        )
         result = await ReactRunner(
             kernel_with_plugin(), model, build_test_prompt, max_steps=3
         ).run("Question")
@@ -102,7 +152,9 @@ class ReliabilityControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "completed")
         self.assertGreaterEqual(result.trace[0].model_latency_ms or -1, 0)
         self.assertEqual(result.trace[0].retry_count, 1)
-        self.assertEqual(result.trace[1].candidate_documents[0]["documentId"], "managed_disk_types")
+        self.assertEqual(
+            result.trace[1].candidate_documents[0]["documentId"], "managed_disk_types"
+        )
         self.assertGreaterEqual(result.trace[1].tool_latency_ms or -1, 0)
         self.assertEqual(result.trace[-1].validation_result, "valid_sources")
 

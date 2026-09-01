@@ -60,6 +60,30 @@ class TraceWriterTests(unittest.TestCase):
                 model_metadata={},
             )
 
+    def test_finished_before_started_is_rejected(self) -> None:
+        started = datetime(2026, 8, 13, tzinfo=timezone.utc)
+        result = ReactRunResult(
+            status="completed",
+            question="Question",
+            answer="Answer",
+            trace=(
+                ReactTraceStep(
+                    step_number=1,
+                    prompt="prompt",
+                    raw_model_output="answer",
+                    outcome="final",
+                    termination_reason="completed",
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "finished_at"):
+            build_trace_record(
+                result,
+                started_at_utc=started,
+                finished_at_utc=started - timedelta(milliseconds=1),
+                model_metadata={"backend": "test"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

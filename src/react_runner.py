@@ -94,16 +94,16 @@ class ReactRunner:
         plugin_name: str = "azure_docs",
         max_steps: int = 5,
         max_parse_retries: int = 2,
-        max_corrections: int = 3,
+        max_corrections: int = 2,
         model_timeout_seconds: float = 120.0,
         tool_timeout_seconds: float = 10.0,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps 必须大于或等于 1")
-        if max_parse_retries < 0:
-            raise ValueError("max_parse_retries 必须大于或等于 0")
-        if max_corrections < 0:
-            raise ValueError("max_corrections 必须大于或等于 0")
+        if not 0 <= max_parse_retries <= 2:
+            raise ValueError("max_parse_retries 必须在 0 到 2 之间")
+        if not 0 <= max_corrections <= 2:
+            raise ValueError("max_corrections 必须在 0 到 2 之间")
         if model_timeout_seconds <= 0 or tool_timeout_seconds <= 0:
             raise ValueError("timeout 必须大于 0")
 
@@ -245,7 +245,52 @@ class ReactRunner:
             consecutive_parse_errors = 0
 
             if isinstance(parsed_step, ReactFinalAnswer):
-                if parsed_step.answer.strip().startswith(SAFE_FALLBACK_PREFIX):
+                is_safe_fallback = parsed_step.answer.strip().startswith(
+                    SAFE_FALLBACK_PREFIX
+                )
+                if is_safe_fallback and successful_action_count == 0:
+                    correction_count += 1
+                    error = "安全降级前必须完成至少一次受控检索"
+                    observation = json.dumps(
+                        {
+                            "status": "error",
+                            "error": "protocol_error",
+                            "message": error,
+                        },
+                        ensure_ascii=False,
+                    )
+                    trace.append(
+                        ReactTraceStep(
+                            step_number=step_number,
+                            prompt=prompt,
+                            raw_model_output=raw_output,
+                            outcome="protocol_error",
+                            thought=parsed_step.thought,
+                            observation=observation,
+                            error=error,
+                            model_latency_ms=model_latency_ms,
+                            validation_result="retrieval_required",
+                            retry_count=correction_count,
+                            termination_reason=(
+                                "correction_limit"
+                                if correction_count > self.max_corrections
+                                else None
+                            ),
+                        )
+                    )
+                    if correction_count > self.max_corrections:
+                        return ReactRunResult(
+                            status="correction_limit",
+                            question=normalized_question,
+                            answer=None,
+                            trace=tuple(trace),
+                            error=f"达到全局纠错上限：{self.max_corrections}",
+                        )
+                    transcript.extend(
+                        (raw_output.strip(), f"Observation: {observation}")
+                    )
+                    continue
+                if is_safe_fallback:
                     trace.append(
                         ReactTraceStep(
                             step_number=step_number,
@@ -341,8 +386,7 @@ class ReactRunner:
             )
             action_signature = self._action_signature(parsed_step)
             was_duplicate = (
-                protocol_error is None
-                and action_signature in executed_actions
+                protocol_error is None and action_signature in executed_actions
             )
             tool_latency_ms: float | None = None
             if protocol_error is not None:
@@ -427,27 +471,21 @@ class ReactRunner:
                         error=error,
                     )
                 tool_latency_ms = (time.perf_counter() - tool_started) * 1000
-                observation_succeeded = self._observation_succeeded(
-                    observation
-                )
+                observation_succeeded = self._observation_succeeded(observation)
                 if observation_succeeded:
                     executed_actions.add(action_signature)
                     successful_action_count += 1
 
             if self._observation_succeeded(observation):
                 evidence_urls.update(URL_PATTERN.findall(observation))
-                observed_document_ids.update(
-                    self._extract_document_ids(observation)
-                )
+                observed_document_ids.update(self._extract_document_ids(observation))
             trace.append(
                 ReactTraceStep(
                     step_number=step_number,
                     prompt=prompt,
                     raw_model_output=raw_output,
                     outcome=(
-                        "protocol_error"
-                        if protocol_error is not None
-                        else "action"
+                        "protocol_error" if protocol_error is not None else "action"
                     ),
                     thought=parsed_step.thought,
                     action=parsed_step.action,
@@ -456,8 +494,13 @@ class ReactRunner:
                     model_latency_ms=model_latency_ms,
                     tool_latency_ms=tool_latency_ms,
                     validation_result=(
-                        "protocol_error" if protocol_error is not None
-                        else ("duplicate_action" if was_duplicate else "observation_validated")
+                        "protocol_error"
+                        if protocol_error is not None
+                        else (
+                            "duplicate_action"
+                            if was_duplicate
+                            else "observation_validated"
+                        )
                     ),
                     retry_count=correction_count,
                     candidate_documents=self._extract_candidates(observation),
@@ -596,10 +639,7 @@ class ReactRunner:
             payload = json.loads(observation)
         except (json.JSONDecodeError, TypeError):
             return False
-        return (
-            isinstance(payload, dict)
-            and payload.get("status") == "success"
-        )
+        return isinstance(payload, dict) and payload.get("status") == "success"
 
     @staticmethod
     def _validate_answer_sources(
@@ -610,14 +650,9 @@ class ReactRunner:
         if not answer_urls:
             return "Final Answer 必须包含至少一个来自 Observation 的来源 URL"
 
-        evidence_documents = {
-            urldefrag(url).url
-            for url in evidence_urls
-        }
+        evidence_documents = {urldefrag(url).url for url in evidence_urls}
         invalid_urls = {
-            url
-            for url in answer_urls
-            if urldefrag(url).url not in evidence_documents
+            url for url in answer_urls if urldefrag(url).url not in evidence_documents
         }
         if invalid_urls:
             invalid = ", ".join(sorted(invalid_urls))
