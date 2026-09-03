@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import io
 import unittest
 from pathlib import Path
@@ -62,9 +61,7 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 cli,
                 "run_and_record",
-                AsyncMock(
-                    side_effect=[RuntimeError("first failed"), completed]
-                ),
+                AsyncMock(side_effect=[RuntimeError("first failed"), completed]),
             ) as run_mock,
             patch(
                 "builtins.input",
