@@ -33,3 +33,9 @@ ReAct 状态机只允许 `search_documents` 和 `read_document`。读取必须�
 共享安全注册表的 8 类合成 canary 会在 trace/异常持久化前被精确清除，随后继续执行既有通用秘密、本机路径和长度限制。正式 `rawOutput` 评分证据仍逐字保留，不进行 trace 脱敏处理。
 
 语义缓存 v2 的兼容域包含语料、Prompt、模型、输出 Schema 和安全域，另有 15 分钟默认 TTL、容量淘汰、显式 scope 失效、引用白名单复核和原因/计数指标。含比较、方向和角色关系的查询使用顺序敏感键，防止 “A 大于 B” 与 “B 大于 A” 误命中。实际调用减少与延迟只在 P7-007 的预注册对照中测量，本阶段不作性能收益声明。
+
+## Phase 9 冻结终评入口
+
+- `python -m src.frozen_runner --cases <冻结集> --expected-dataset-sha256 <hash> --expected-corpus-sha256 <hash> --model <gguf> --expected-model-sha256 <hash> --run-id <唯一 ID> --output-root <目录> --cpu`：逐条运行冻结问题，原始模型输出逐字追加到 `raw_predictions.jsonl`，trace 与共享 sidecar 经既有脱敏写入同一 run 目录；run 目录独占创建，任何 hash 不匹配立即失败。缓存在终评中固定为 bypass，缓存收益只引用 P7-007 对照。
+- `python -m src.rubric_review build --cases <冻结集> --raw <raw_predictions.jsonl> --output-dir <目录> --reviewer <A> --reviewer <B>`：为可回答样本生成两份未填写的事实点评审表；`merge` 子命令把两份填好的表合并回预测文件后再用 `qa_pipeline.score_prediction_files` 评分。两位 reviewer 必须不同，任一事实点未填即拒绝合并。
+- `max_corrections` 在配置锁中记为 3，但 `ReactRunner` 只允许 0 到 2；终评按代码上限 2 运行并在预注册中记录该差异。
