@@ -123,3 +123,90 @@ class QaEvaluatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ValidCitationDenominatorTests(unittest.TestCase):
+    """The frozen metric contract fixes the denominator at completed answers."""
+
+    def _case(self, case_id: str) -> dict[str, object]:
+        return {
+            "caseId": case_id,
+            "language": "en",
+            "category": "single_document",
+            "difficulty": "easy",
+            "answerability": "answerable",
+            "goldFactPoints": ["fact"],
+            "goldSources": ["https://learn.microsoft.com/doc"],
+            "requiredDocumentIds": ["doc"],
+        }
+
+    def _prediction(self, case_id: str, *, status: str, answer: str | None) -> dict[str, object]:
+        return {
+            "runId": "r",
+            "caseId": case_id,
+            "status": status,
+            "answer": answer,
+            "latencyMs": 1.0,
+            "rawOutput": "raw",
+            "cacheHit": False,
+            "trace": [
+                {
+                    "outcome": "action",
+                    "executed": True,
+                    "action": "search_documents",
+                    "observation": json.dumps(
+                        {
+                            "status": "success",
+                            "documentId": "doc",
+                            "source": "https://learn.microsoft.com/doc",
+                        }
+                    ),
+                }
+            ],
+            "rubricReviews": [
+                {"reviewerId": "a", "factPointScores": [True]},
+                {"reviewerId": "b", "factPointScores": [True]},
+            ],
+        }
+
+    def test_case_without_a_completed_answer_leaves_the_denominator(self) -> None:
+        score = score_case(
+            self._case("c1"),
+            self._prediction("c1", status="parse_error", answer=None),
+        )
+        self.assertIsNone(score["validCitationRate"])
+        self.assertFalse(score["answerProduced"])
+        self.assertNotIn("fabricated_citation", score["errors"])
+
+    def test_completed_answer_citing_observed_gold_source_is_valid(self) -> None:
+        score = score_case(
+            self._case("c2"),
+            self._prediction(
+                "c2", status="completed", answer="fact https://learn.microsoft.com/doc"
+            ),
+        )
+        self.assertEqual(score["validCitationRate"], 1.0)
+        self.assertTrue(score["answerProduced"])
+        self.assertEqual(score["errors"], [])
+
+    def test_completed_answer_citing_an_unobserved_url_still_fails(self) -> None:
+        score = score_case(
+            self._case("c3"),
+            self._prediction(
+                "c3", status="completed", answer="fact https://evil.example/doc"
+            ),
+        )
+        self.assertEqual(score["validCitationRate"], 0.0)
+        self.assertIn("fabricated_citation", score["errors"])
+
+    def test_summary_reports_coverage_next_to_citation_validity(self) -> None:
+        scores = [
+            score_case(self._case("c1"), self._prediction("c1", status="parse_error", answer=None)),
+            score_case(
+                self._case("c2"),
+                self._prediction("c2", status="completed", answer="fact https://learn.microsoft.com/doc"),
+            ),
+        ]
+        summary = summarize_scores(scores)
+        self.assertEqual(summary["validCitationRate"], 1.0)
+        self.assertEqual(summary["answerCoverageRate"], 0.5)

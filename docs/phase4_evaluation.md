@@ -39,3 +39,14 @@ ReAct 状态机只允许 `search_documents` 和 `read_document`。读取必须�
 - `python -m src.frozen_runner --cases <冻结集> --expected-dataset-sha256 <hash> --expected-corpus-sha256 <hash> --model <gguf> --expected-model-sha256 <hash> --run-id <唯一 ID> --output-root <目录> --cpu`：逐条运行冻结问题，原始模型输出逐字追加到 `raw_predictions.jsonl`，trace 与共享 sidecar 经既有脱敏写入同一 run 目录；run 目录独占创建，任何 hash 不匹配立即失败。缓存在终评中固定为 bypass，缓存收益只引用 P7-007 对照。
 - `python -m src.rubric_review build --cases <冻结集> --raw <raw_predictions.jsonl> --output-dir <目录> --reviewer <A> --reviewer <B>`：为可回答样本生成两份未填写的事实点评审表；`merge` 子命令把两份填好的表合并回预测文件后再用 `qa_pipeline.score_prediction_files` 评分。两位 reviewer 必须不同，任一事实点未填即拒绝合并。
 - `max_corrections` 在配置锁中记为 3，但 `ReactRunner` 只允许 0 到 2；终评按代码上限 2 运行并在预注册中记录该差异。
+
+## 有效引用率分母修正（2026-09-09）
+
+共享冻结指标词典对 `valid_citation_rate` 的定义是 `validly_cited_answers / completed_answers`，分母为「已完成回答数」。
+评分器此前把全部可回答样本放进分母，并给没有产出答案的样本记 0 分且打 `fabricated_citation` 标签，比冻结契约更严。
+按预注册的评分器缺陷策略修正：没有产出完成回答的样本不进入该分母，另新增 `answerCoverageRate` 报告产出率。
+
+- 同一批不可变原始输出重新评分（`scored-rescored-20260909/`），三轮结果一致：有效引用率由 27.78% 变为 100%，答案覆盖率 27.78%。
+- 原先 26 条 `fabricated_citation` 全部消失；本轮评测中编造引用数为 0。修正前的指标实际测的是覆盖率而不是引用有效性。
+- 引用有效率必须与答案覆盖率一起引用：100% 只覆盖实际产出答案的 10 条样本。
+- 真正引用了未观察 URL 的完成回答仍然计 0 并保留 `fabricated_citation` 标签。

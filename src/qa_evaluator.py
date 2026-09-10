@@ -83,11 +83,19 @@ def score_case(case: dict[str, object], prediction: dict[str, object]) -> dict[s
         answer_accuracy, rubric_agreement = _dual_rubric(case, prediction)
 
     answer_urls = set(URL_PATTERN.findall(answer)) if isinstance(answer, str) else set()
-    if answerability == "answerable":
+    # The frozen metric contract fixes the denominator at completed answers:
+    # validly_cited_answers / completed_answers. A case that never produced an
+    # answer has no citation to judge and leaves the denominator entirely; it is
+    # counted by answerCoverageRate instead, so a high citation validity can
+    # never be quoted without the coverage it was measured over.
+    answer_produced = answerability == "answerable" and status == "completed"
+    if answer_produced:
         allowed = {urldefrag(str(url)).url for url in case.get("goldSources", [])}
         observed = {urldefrag(url).url for url in observed_sources}
         valid_count = sum(urldefrag(url).url in allowed & observed for url in answer_urls)
-        valid_citation_rate: float | None = valid_count / len(answer_urls) if answer_urls else 0.0
+        valid_citation_rate: float | None = (
+            valid_count / len(answer_urls) if answer_urls else 0.0
+        )
         if valid_citation_rate < 1.0:
             errors.append("fabricated_citation")
     else:
@@ -121,6 +129,7 @@ def score_case(case: dict[str, object], prediction: dict[str, object]) -> dict[s
         "answerAccuracy": answer_accuracy,
         "rubricAgreement": rubric_agreement,
         "validCitationRate": valid_citation_rate,
+        "answerProduced": answer_produced,
         "documentHit": document_hit,
         "unanswerableRecognized": unanswerable_recognized,
         "recoveryAttempted": invalid_seen,
@@ -177,6 +186,12 @@ def summarize_scores(scores: list[dict[str, object]]) -> dict[str, object]:
         "answerAccuracy": _mean_present(scores, "answerAccuracy"),
         "rubricAgreement": _mean_present(scores, "rubricAgreement"),
         "validCitationRate": _mean_present(scores, "validCitationRate"),
+        "answerCoverageRate": (
+            sum(bool(score.get("answerProduced")) for score in scores)
+            / sum(score.get("answerAccuracy") is not None for score in scores)
+            if any(score.get("answerAccuracy") is not None for score in scores)
+            else None
+        ),
         "documentHitRate": _bool_rate_present(scores, "documentHit"),
         "unanswerableRecognitionRate": (
             sum(bool(score.get("unanswerableRecognized")) for score in scores)
